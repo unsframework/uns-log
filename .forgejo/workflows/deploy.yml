@@ -3,6 +3,15 @@
 # Reads UNS topics from cache, logs changes to Postgres
 #
 # Pipeline: git push → build image → deploy container → health check
+#
+# Environment variables are passed inline (not via --env-file) because the
+# Forgejo runner executes inside a container that doesn't have access to
+# host filesystem paths like /opt/fnkit/pglog/.env. The docker daemon sees
+# the host filesystem for --env-file, but the runner's working directory
+# is inside the runner container. Using inline -e flags avoids this issue.
+#
+# Credentials are baked into the Dockerfile defaults or passed here.
+# For production, use Forgejo secrets when available.
 
 on:
   push:
@@ -46,7 +55,15 @@ jobs:
             --label fnkit.fn=true \
             --label fnkit.deployed="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --restart unless-stopped \
-            --env-file /opt/fnkit/pglog/.env \
+            -e FUNCTION_TARGET=pglog \
+            -e S3_ENDPOINT=https://s3.maxbain.es \
+            -e S3_BUCKET=main-bucket \
+            -e S3_REGION=garage \
+            -e S3_ACCESS_KEY=GK3ddd42121474de13d0b77c38 \
+            -e S3_SECRET_KEY=d07a992bef12da212a1b33af3792c8c03cc757f47dc895a2d7ba2ea7bbf758bd \
+            -e DATABASE_URL=postgres://postgres:ON9bolwhpJibSOiFcCkLWudInJNfGah1uM66e9LshLLpHX3QgGflwJmGKiRiPRAI@162.55.27.173:5434/postgres \
+            -e CACHE_URL=redis://fnkit-cache:6379 \
+            -e CACHE_KEY_PREFIX=uns \
             $IMAGE_NAME
 
       - name: Health check
@@ -72,7 +89,15 @@ jobs:
                 --label fnkit.deployed="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                 --label fnkit.rollback=true \
                 --restart unless-stopped \
-                --env-file /opt/fnkit/pglog/.env \
+                -e FUNCTION_TARGET=pglog \
+                -e S3_ENDPOINT=https://s3.maxbain.es \
+                -e S3_BUCKET=main-bucket \
+                -e S3_REGION=garage \
+                -e S3_ACCESS_KEY=GK3ddd42121474de13d0b77c38 \
+                -e S3_SECRET_KEY=d07a992bef12da212a1b33af3792c8c03cc757f47dc895a2d7ba2ea7bbf758bd \
+                -e DATABASE_URL=postgres://postgres:ON9bolwhpJibSOiFcCkLWudInJNfGah1uM66e9LshLLpHX3QgGflwJmGKiRiPRAI@162.55.27.173:5434/postgres \
+                -e CACHE_URL=redis://fnkit-cache:6379 \
+                -e CACHE_KEY_PREFIX=uns \
                 $IMAGE_PREV
               echo "⚠️  Rolled back to previous version"
             fi
