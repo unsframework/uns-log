@@ -1,0 +1,65 @@
+# Docker Compose for pglog — PostgreSQL Change Logger
+# Reads UNS topic data from Valkey cache and logs changes to PostgreSQL
+#
+# Requires: docker network create fnkit-network
+# Requires: fnkit-cache running (fnkit cache start)
+# Requires: mqttuns running (populates uns:* cache keys)
+# Requires: PostgreSQL accessible (external)
+# Requires: S3/MinIO accessible with config file uploaded
+
+services:
+  pglog:
+    build: .
+    container_name: pglog
+    environment:
+      # Function target name — also used as S3 config key
+      # e.g. pglog → reads s3://{bucket}/pglog.json
+      - FUNCTION_TARGET=pglog
+      # S3 config storage
+      - S3_ENDPOINT=${S3_ENDPOINT:-}
+      - S3_BUCKET=${S3_BUCKET:-fnkit-config}
+      - S3_REGION=${S3_REGION:-us-east-1}
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY:-}
+      - S3_SECRET_KEY=${S3_SECRET_KEY:-}
+      # PostgreSQL connection (external)
+      - DATABASE_URL=${DATABASE_URL:-postgres://fnkit:fnkit@fnkit-postgres:5432/fnkit?sslmode=disable}
+      # Shared cache (Valkey/Redis)
+      - CACHE_URL=${CACHE_URL:-redis://fnkit-cache:6379}
+      # Cache key prefix for UNS data (must match mqttuns)
+      - CACHE_KEY_PREFIX=uns
+    networks:
+      - fnkit-network
+    restart: unless-stopped
+
+networks:
+  fnkit-network:
+    name: fnkit-network
+    external: true
+
+# Usage:
+#   docker compose up -d
+#
+# Multiple instances (different equipment/lines):
+#   Copy this file, change container_name and FUNCTION_TARGET:
+#
+#   pglog-line1:
+#     build: .
+#     container_name: pglog-line1
+#     environment:
+#       - FUNCTION_TARGET=pglog-line1
+#       ...
+#
+#   pglog-line2:
+#     build: .
+#     container_name: pglog-line2
+#     environment:
+#       - FUNCTION_TARGET=pglog-line2
+#       ...
+#
+# Each instance reads its own config from S3:
+#   pglog-line1 → s3://fnkit-config/pglog-line1.json
+#   pglog-line2 → s3://fnkit-config/pglog-line2.json
+#
+# Trigger via gateway:
+#   curl -H "Authorization: Bearer <token>" http://localhost:8080/pglog-line1
+#   curl -H "Authorization: Bearer <token>" http://localhost:8080/pglog-line2

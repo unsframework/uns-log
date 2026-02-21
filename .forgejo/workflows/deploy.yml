@@ -1,0 +1,31 @@
+name: Build and Deploy
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t fnkit-fn-pglog:latest .
+
+      - name: Stop existing container
+        run: docker rm -f pglog 2>/dev/null || true
+
+      - name: Start container
+        run: |
+          docker run -d \
+            --name pglog \
+            --network fnkit-network \
+            --label fnkit.fn=true \
+            --restart unless-stopped \
+            --env-file /opt/fnkit/pglog/.env \
+            fnkit-fn-pglog:latest
+
+      - name: Health check
+        run: |
+          sleep 3
+          docker ps --filter name=pglog --format '{{.Status}}' | grep -q 'Up' && echo "✓ pglog is running" || (echo "✗ pglog failed to start" && docker logs pglog && exit 1)
