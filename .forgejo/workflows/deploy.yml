@@ -1,4 +1,9 @@
-name: Build and Deploy
+# FnKit Deploy — Forgejo Actions
+# Builds and deploys the pglog PostgreSQL change logger on every push to main
+# Reads UNS topics from cache, logs changes to Postgres
+#
+# Pipeline: git push → build image → deploy container → health check
+
 on:
   push:
     branches: [main]
@@ -9,23 +14,72 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -t fnkit-fn-pglog:latest .
-
-      - name: Stop existing container
-        run: docker rm -f pglog 2>/dev/null || true
-
-      - name: Start container
+      - name: Build image
         run: |
+          FUNCTION_NAME="pglog"
+          IMAGE_NAME="fnkit-fn-${FUNCTION_NAME}:latest"
+          IMAGE_PREV="fnkit-fn-${FUNCTION_NAME}:prev"
+
+          echo "🔨 Building ${FUNCTION_NAME}..."
+          docker build -t $IMAGE_NAME .
+
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+          echo "IMAGE_PREV=$IMAGE_PREV" >> $GITHUB_ENV
+          echo "FUNCTION_NAME=$FUNCTION_NAME" >> $GITHUB_ENV
+
+      - name: Deploy container
+        run: |
+          echo "🌐 Ensuring fnkit-network exists..."
+          docker network create fnkit-network 2>/dev/null || true
+
+          # Tag current image as :prev for rollback
+          docker tag $IMAGE_NAME $IMAGE_PREV 2>/dev/null || true
+
+          echo "♻️  Replacing running container..."
+          docker stop $FUNCTION_NAME 2>/dev/null || true
+          docker rm $FUNCTION_NAME 2>/dev/null || true
+
+          echo "🚀 Starting ${FUNCTION_NAME}..."
           docker run -d \
-            --name pglog \
+            --name $FUNCTION_NAME \
             --network fnkit-network \
             --label fnkit.fn=true \
+            --label fnkit.deployed="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --restart unless-stopped \
             --env-file /opt/fnkit/pglog/.env \
-            fnkit-fn-pglog:latest
+            $IMAGE_NAME
 
       - name: Health check
         run: |
-          sleep 3
-          docker ps --filter name=pglog --format '{{.Status}}' | grep -q 'Up' && echo "✓ pglog is running" || (echo "✗ pglog failed to start" && docker logs pglog && exit 1)
+          echo "🏥 Checking container health..."
+          sleep 5
+
+          if docker ps --filter "name=$FUNCTION_NAME" --filter "status=running" -q | grep -q .; then
+            echo "✅ ${FUNCTION_NAME} is running"
+            docker logs $FUNCTION_NAME 2>&1 | tail -10
+          else
+            echo "❌ Container failed to start — rolling back..."
+            docker logs $FUNCTION_NAME 2>&1 || true
+
+            # Rollback to previous image if available
+            if docker image inspect $IMAGE_PREV >/dev/null 2>&1; then
+              echo "🔄 Rolling back to previous image..."
+              docker rm $FUNCTION_NAME 2>/dev/null || true
+              docker run -d \
+                --name $FUNCTION_NAME \
+                --network fnkit-network \
+                --label fnkit.fn=true \
+                --label fnkit.deployed="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                --label fnkit.rollback=true \
+                --restart unless-stopped \
+                --env-file /opt/fnkit/pglog/.env \
+                $IMAGE_PREV
+              echo "⚠️  Rolled back to previous version"
+            fi
+            exit 1
+          fi
+
+      - name: Cleanup old images
+        run: |
+          echo "🧹 Cleaning up dangling images..."
+          docker image prune -f --filter "label=fnkit.fn=true" 2>/dev/null || true
