@@ -11,7 +11,7 @@ POST /pglog (via gateway)
 ┌─────────────────────────────────────────────┐
 │  pglog (Go HTTP function)                   │
 │                                             │
-│  1. Fetch config from S3 (cached 30s)       │
+│  1. Fetch config from Valkey (cached 30s)   │
 │     → topic list, table name                │
 │                                             │
 │  2. Read all topics from Valkey cache       │
@@ -27,22 +27,22 @@ POST /pglog (via gateway)
 │                                             │
 │  5. Return JSON summary                     │
 └─────────────────────────────────────────────┘
-         │              │              │
-         ▼              ▼              ▼
-   S3 (config)    fnkit-cache    PostgreSQL
-                  (Valkey)
+         │              │
+         ▼              ▼
+   fnkit-cache      PostgreSQL
+   (Valkey)
 ```
 
-## Config in S3
+## Config in Valkey
 
-Config is stored in S3 — **not** in `.env` files. The function reads its config from S3 using `FUNCTION_TARGET` as the key:
+Config is stored in the shared Valkey cache — **not** in `.env` files or S3. The function reads its config using `FUNCTION_TARGET` as the key:
 
 ```
-FUNCTION_TARGET=pglog-line1  →  reads s3://{bucket}/pglog-line1.json
-FUNCTION_TARGET=pglog-line2  →  reads s3://{bucket}/pglog-line2.json
+FUNCTION_TARGET=pglog-line1  →  reads fnkit:config:pglog-line1
+FUNCTION_TARGET=pglog-line2  →  reads fnkit:config:pglog-line2
 ```
 
-### Config file format
+### Config format
 
 ```json
 {
@@ -65,10 +65,10 @@ That's it — **everything else is derived from the UNS topic path**:
 | `line`       | `parts[4]`  | line1      |
 | `tag`        | `parts[5:]` | temperature |
 
-Upload config with the fnkit S3 CLI:
+Set config with valkey-cli:
 
 ```bash
-fnkit s3 upload pglog-line1.json pglog-line1.json
+docker exec fnkit-cache valkey-cli SET fnkit:config:pglog '{"table":"uns_log","topics":["v1.0/acme/factory1/mixing/line1/temperature","v1.0/acme/factory1/mixing/line1/pressure","v1.0/acme/factory1/mixing/line1/speed"]}'
 ```
 
 ## PostgreSQL Table
@@ -109,9 +109,8 @@ fnkit cache start
 # (mqttuns should already be running and populating cache)
 # (PostgreSQL should be accessible)
 
-# Upload config to S3
-fnkit s3 init --bucket fnkit-config --endpoint http://minio:9000
-fnkit s3 upload pglog.json pglog.json
+# Set config in Valkey
+docker exec fnkit-cache valkey-cli SET fnkit:config:pglog '{"table":"uns_log","topics":["v1.0/acme/factory1/mixing/line1/temperature"]}'
 
 # Build and start
 docker compose up -d
@@ -125,7 +124,7 @@ curl http://localhost:8080/pglog
 
 ## Multiple Instances
 
-Deploy the same image multiple times with different `FUNCTION_TARGET` values. Each reads its own config from S3:
+Deploy the same image multiple times with different `FUNCTION_TARGET` values. Each reads its own config from Valkey:
 
 ```yaml
 services:
@@ -134,20 +133,20 @@ services:
     container_name: pglog-line1
     environment:
       - FUNCTION_TARGET=pglog-line1
-      # ... same S3/Postgres/Cache config
+      # ... same Postgres/Cache config
 
   pglog-line2:
     build: .
     container_name: pglog-line2
     environment:
       - FUNCTION_TARGET=pglog-line2
-      # ... same S3/Postgres/Cache config
+      # ... same Postgres/Cache config
 ```
 
 ```bash
-# Upload separate configs
-fnkit s3 upload line1-config.json pglog-line1.json
-fnkit s3 upload line2-config.json pglog-line2.json
+# Set separate configs in Valkey
+docker exec fnkit-cache valkey-cli SET fnkit:config:pglog-line1 '{"table":"uns_log","topics":[...]}'
+docker exec fnkit-cache valkey-cli SET fnkit:config:pglog-line2 '{"table":"uns_log","topics":[...]}'
 
 # Trigger via gateway
 curl http://localhost:8080/pglog-line1
@@ -189,16 +188,11 @@ curl http://localhost:8080/pglog-line2
 
 ## Configuration
 
-Environment variables (connections only — topic config lives in S3):
+Environment variables (connections only — topic config lives in Valkey):
 
 | Variable           | Default                                                          | Description                        |
 | ------------------ | ---------------------------------------------------------------- | ---------------------------------- |
-| `FUNCTION_TARGET`  | `pglog`                                                          | Function name = S3 config key      |
-| `S3_ENDPOINT`      |                                                                  | S3-compatible endpoint (MinIO etc) |
-| `S3_BUCKET`        | `fnkit-config`                                                   | S3 bucket for config files         |
-| `S3_REGION`        | `us-east-1`                                                      | S3 region                          |
-| `S3_ACCESS_KEY`    |                                                                  | S3 access key                      |
-| `S3_SECRET_KEY`    |                                                                  | S3 secret key                      |
+| `FUNCTION_TARGET`  | `pglog`                                                          | Function name = Valkey config key  |
 | `DATABASE_URL`     | `postgres://fnkit:fnkit@fnkit-postgres:5432/fnkit?sslmode=disable` | PostgreSQL connection string       |
 | `CACHE_URL`        | `redis://fnkit-cache:6379`                                       | Valkey/Redis connection            |
 | `CACHE_KEY_PREFIX` | `uns`                                                            | Cache key prefix (match mqttuns)   |
@@ -219,4 +213,3 @@ All hierarchy metadata is parsed directly from the topic path — no manual mapp
 - [functions-framework-go](https://github.com/GoogleCloudPlatform/functions-framework-go) — HTTP function framework
 - [go-redis](https://github.com/redis/go-redis) — Valkey/Redis client
 - [pgx](https://github.com/jackc/pgx) — PostgreSQL driver
-- [aws-sdk-go-v2](https://github.com/aws/aws-sdk-go-v2) — S3 client

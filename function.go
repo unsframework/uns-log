@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -13,18 +12,15 @@ import (
 	"time"
 
 	"github.com/GoogleCloudPlatform/functions-framework-go/functions"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
 // ── Configuration ────────────────────────────────────────────────────
-// Config is loaded from S3 using the function name as the key.
-// e.g. FUNCTION_TARGET=pglog-line1 → reads s3://{bucket}/pglog-line1.json
+// Config is loaded from Valkey cache using the function name as the key.
+// e.g. FUNCTION_TARGET=pglog-line1 → reads fnkit:config:pglog-line1
 //
-// S3 config file format:
+// Config format (stored as JSON string in Valkey):
 //
 //	{
 //	  "table": "uns_log",
@@ -58,7 +54,6 @@ var (
 	ctx       = context.Background()
 	cache     *redis.Client
 	db        *pgxpool.Pool
-	s3Client  *s3.Client
 	keyPrefix string
 
 	// Config cache
@@ -102,39 +97,11 @@ func init() {
 		log.Printf("[pglog] Connected to Postgres")
 	}
 
-	// ── S3 client ────────────────────────────────────────────────────
-	s3Endpoint := envOrDefault("S3_ENDPOINT", "")
-	s3Region := envOrDefault("S3_REGION", "us-east-1")
-	s3AccessKey := envOrDefault("S3_ACCESS_KEY", "")
-	s3SecretKey := envOrDefault("S3_SECRET_KEY", "")
-
-	s3Opts := []func(*s3.Options){
-		func(o *s3.Options) {
-			o.Region = s3Region
-			o.UsePathStyle = true
-		},
-	}
-
-	if s3Endpoint != "" {
-		s3Opts = append(s3Opts, func(o *s3.Options) {
-			o.BaseEndpoint = aws.String(s3Endpoint)
-		})
-	}
-
-	if s3AccessKey != "" && s3SecretKey != "" {
-		s3Opts = append(s3Opts, func(o *s3.Options) {
-			o.Credentials = credentials.NewStaticCredentialsProvider(s3AccessKey, s3SecretKey, "")
-		})
-	}
-
-	s3Client = s3.New(s3.Options{}, s3Opts...)
-	log.Printf("[pglog] S3 client configured (bucket: %s)", envOrDefault("S3_BUCKET", ""))
-
 	// ── Initialize last snapshot ─────────────────────────────────────
 	lastSnapshot = make(map[string]string)
 
 	// ── Register HTTP function ───────────────────────────────────────
-	// The function name matches FUNCTION_TARGET, which is also the S3 config key.
+	// The function name matches FUNCTION_TARGET, which is also the config key.
 	functionName := envOrDefault("FUNCTION_TARGET", "pglog")
 	functions.HTTP(functionName, pglogHandler)
 	log.Printf("[pglog] Registered HTTP function: %s", functionName)
@@ -143,7 +110,7 @@ func init() {
 // ── HTTP Handler ─────────────────────────────────────────────────────
 // POST /pglog (or whatever FUNCTION_TARGET is set to)
 //
-// 1. Loads config from S3 (cached 30s)
+// 1. Loads config from Valkey cache (cached 30s)
 // 2. Reads all configured topics from Valkey cache
 // 3. Detects changes (current vs previous via uns:data/uns:prev keys)
 // 4. If any topic changed → INSERT snapshot row to Postgres
@@ -152,7 +119,7 @@ func init() {
 func pglogHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// 1. Load config from S3
+	// 1. Load config from Valkey
 	config, err := loadConfig()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -229,7 +196,7 @@ func pglogHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ── S3 Config Loading ────────────────────────────────────────────────
+// ── Config Loading (from Valkey) ─────────────────────────────────────
 
 func loadConfig() (*pglogConfig, error) {
 	configMu.RLock()
@@ -248,30 +215,19 @@ func loadConfig() (*pglogConfig, error) {
 		return cachedConfig, nil
 	}
 
-	bucket := envOrDefault("S3_BUCKET", "")
-	if bucket == "" {
-		return nil, fmt.Errorf("S3_BUCKET not configured")
+	// Config key = fnkit:config:<FUNCTION_TARGET>
+	configKey := "fnkit:config:" + envOrDefault("FUNCTION_TARGET", "pglog")
+
+	raw, err := cache.Get(ctx, configKey).Result()
+	if err == redis.Nil {
+		return nil, fmt.Errorf("config not found at key %s — set it with: docker exec fnkit-cache valkey-cli SET %s '<json>'", configKey, configKey)
 	}
-
-	// Config key = FUNCTION_TARGET (container name)
-	configKey := envOrDefault("FUNCTION_TARGET", "pglog") + ".json"
-
-	result, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(configKey),
-	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to read s3://%s/%s: %w", bucket, configKey, err)
-	}
-	defer result.Body.Close()
-
-	body, err := io.ReadAll(result.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read S3 response body: %w", err)
+		return nil, fmt.Errorf("failed to read config from cache key %s: %w", configKey, err)
 	}
 
 	var config pglogConfig
-	if err := json.Unmarshal(body, &config); err != nil {
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
 
@@ -281,8 +237,8 @@ func loadConfig() (*pglogConfig, error) {
 
 	cachedConfig = &config
 	configFetched = time.Now()
-	log.Printf("[pglog] Loaded config from s3://%s/%s (%d topics, table: %s)",
-		bucket, configKey, len(config.Topics), config.Table)
+	log.Printf("[pglog] Loaded config from %s (%d topics, table: %s)",
+		configKey, len(config.Topics), config.Table)
 
 	return &config, nil
 }
