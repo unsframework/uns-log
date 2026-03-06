@@ -1,15 +1,15 @@
-# pglog — PostgreSQL Change Logger
+# uns-log — PostgreSQL Change Logger
 
-A Go HTTP function that reads [UNS Framework](https://www.unsframework.com) topic data from the shared Valkey cache (populated by [mqttuns](../mqttuns/)) and logs snapshot rows to PostgreSQL when any value changes.
+A Go HTTP function that reads [UNS Framework](https://www.unsframework.com) topic data from the shared Valkey cache (populated by [uns-framework](../uns-framework/)) and logs snapshot rows to PostgreSQL when any value changes.
 
 ## How It Works
 
 ```
-POST /pglog (via gateway)
+POST /uns-log (via gateway)
     │
     ▼
 ┌─────────────────────────────────────────────┐
-│  pglog (Go HTTP function)                   │
+│  uns-log (Go HTTP function)                   │
 │                                             │
 │  1. Fetch config from Valkey (cached 30s)   │
 │     → topic list, table name                │
@@ -38,8 +38,8 @@ POST /pglog (via gateway)
 Config is stored in the shared Valkey cache — **not** in `.env` files or S3. The function reads its config using `FUNCTION_TARGET` as the key:
 
 ```
-FUNCTION_TARGET=pglog-line1  →  reads fnkit:config:pglog-line1
-FUNCTION_TARGET=pglog-line2  →  reads fnkit:config:pglog-line2
+FUNCTION_TARGET=uns-log-line1  →  reads fnkit:config:uns-log-line1
+FUNCTION_TARGET=uns-log-line2  →  reads fnkit:config:uns-log-line2
 ```
 
 ### Config format
@@ -57,18 +57,18 @@ FUNCTION_TARGET=pglog-line2  →  reads fnkit:config:pglog-line2
 
 That's it — **everything else is derived from the UNS topic path**:
 
-| UNS Level    | Parsed From | Example    |
-| ------------ | ----------- | ---------- |
-| `enterprise` | `parts[1]`  | acme       |
-| `site`       | `parts[2]`  | factory1   |
-| `area`       | `parts[3]`  | mixing     |
-| `line`       | `parts[4]`  | line1      |
+| UNS Level    | Parsed From | Example     |
+| ------------ | ----------- | ----------- |
+| `enterprise` | `parts[1]`  | acme        |
+| `site`       | `parts[2]`  | factory1    |
+| `area`       | `parts[3]`  | mixing      |
+| `line`       | `parts[4]`  | line1       |
 | `tag`        | `parts[5:]` | temperature |
 
 Set config with valkey-cli:
 
 ```bash
-docker exec fnkit-cache valkey-cli SET fnkit:config:pglog '{"table":"uns_log","topics":["v1.0/acme/factory1/mixing/line1/temperature","v1.0/acme/factory1/mixing/line1/pressure","v1.0/acme/factory1/mixing/line1/speed"]}'
+docker exec fnkit-cache valkey-cli SET fnkit:config:uns-log '{"table":"uns_log","topics":["v1.0/acme/factory1/mixing/line1/temperature","v1.0/acme/factory1/mixing/line1/pressure","v1.0/acme/factory1/mixing/line1/speed"]}'
 ```
 
 ## PostgreSQL Table
@@ -103,23 +103,23 @@ Every row is a **complete snapshot** — unchanged values are copied forward.
 ## Quick Start
 
 ```bash
-# Ensure fnkit-network, cache, and mqttuns are running
+# Ensure fnkit-network, cache, and uns-framework are running
 docker network create fnkit-network 2>/dev/null || true
 fnkit cache start
-# (mqttuns should already be running and populating cache)
+# (uns-framework should already be running and populating cache)
 # (PostgreSQL should be accessible)
 
 # Set config in Valkey
-docker exec fnkit-cache valkey-cli SET fnkit:config:pglog '{"table":"uns_log","topics":["v1.0/acme/factory1/mixing/line1/temperature"]}'
+docker exec fnkit-cache valkey-cli SET fnkit:config:uns-log '{"table":"uns_log","topics":["v1.0/acme/factory1/mixing/line1/temperature"]}'
 
 # Build and start
 docker compose up -d
 
 # Check logs
-docker logs -f pglog
+docker logs -f uns-log
 
 # Trigger a log run
-curl http://localhost:8080/pglog
+curl http://localhost:8080/uns-log
 ```
 
 ## Multiple Instances
@@ -128,29 +128,29 @@ Deploy the same image multiple times with different `FUNCTION_TARGET` values. Ea
 
 ```yaml
 services:
-  pglog-line1:
+  uns-log-line1:
     build: .
-    container_name: pglog-line1
+    container_name: uns-log-line1
     environment:
-      - FUNCTION_TARGET=pglog-line1
+      - FUNCTION_TARGET=uns-log-line1
       # ... same Postgres/Cache config
 
-  pglog-line2:
+  uns-log-line2:
     build: .
-    container_name: pglog-line2
+    container_name: uns-log-line2
     environment:
-      - FUNCTION_TARGET=pglog-line2
+      - FUNCTION_TARGET=uns-log-line2
       # ... same Postgres/Cache config
 ```
 
 ```bash
 # Set separate configs in Valkey
-docker exec fnkit-cache valkey-cli SET fnkit:config:pglog-line1 '{"table":"uns_log","topics":[...]}'
-docker exec fnkit-cache valkey-cli SET fnkit:config:pglog-line2 '{"table":"uns_log","topics":[...]}'
+docker exec fnkit-cache valkey-cli SET fnkit:config:uns-log-line1 '{"table":"uns_log","topics":[...]}'
+docker exec fnkit-cache valkey-cli SET fnkit:config:uns-log-line2 '{"table":"uns_log","topics":[...]}'
 
 # Trigger via gateway
-curl http://localhost:8080/pglog-line1
-curl http://localhost:8080/pglog-line2
+curl http://localhost:8080/uns-log-line1
+curl http://localhost:8080/uns-log-line2
 ```
 
 ## API Response
@@ -190,12 +190,12 @@ curl http://localhost:8080/pglog-line2
 
 Environment variables (connections only — topic config lives in Valkey):
 
-| Variable           | Default                                                          | Description                        |
-| ------------------ | ---------------------------------------------------------------- | ---------------------------------- |
-| `FUNCTION_TARGET`  | `pglog`                                                          | Function name = Valkey config key  |
-| `DATABASE_URL`     | `postgres://fnkit:fnkit@fnkit-postgres:5432/fnkit?sslmode=disable` | PostgreSQL connection string       |
-| `CACHE_URL`        | `redis://fnkit-cache:6379`                                       | Valkey/Redis connection            |
-| `CACHE_KEY_PREFIX` | `uns`                                                            | Cache key prefix (match mqttuns)   |
+| Variable           | Default                                                            | Description                            |
+| ------------------ | ------------------------------------------------------------------ | -------------------------------------- |
+| `FUNCTION_TARGET`  | `uns-log`                                                          | Function name = Valkey config key      |
+| `DATABASE_URL`     | `postgres://fnkit:fnkit@fnkit-postgres:5432/fnkit?sslmode=disable` | PostgreSQL connection string           |
+| `CACHE_URL`        | `redis://fnkit-cache:6379`                                         | Valkey/Redis connection                |
+| `CACHE_KEY_PREFIX` | `uns`                                                              | Cache key prefix (match uns-framework) |
 
 ## UNS Framework
 
@@ -209,7 +209,7 @@ All hierarchy metadata is parsed directly from the topic path — no manual mapp
 
 ## Built With
 
-- [fnkit](https://github.com/maxbaines/fnkit) — scaffolded with `fnkit go pglog`
+- [fnkit](https://github.com/maxbaines/fnkit) — scaffolded with `fnkit go uns-log`
 - [functions-framework-go](https://github.com/GoogleCloudPlatform/functions-framework-go) — HTTP function framework
 - [go-redis](https://github.com/redis/go-redis) — Valkey/Redis client
 - [pgx](https://github.com/jackc/pgx) — PostgreSQL driver

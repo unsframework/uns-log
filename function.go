@@ -18,7 +18,7 @@ import (
 
 // ── Configuration ────────────────────────────────────────────────────
 // Config is loaded from Valkey cache using the function name as the key.
-// e.g. FUNCTION_TARGET=pglog-line1 → reads fnkit:config:pglog-line1
+// e.g. FUNCTION_TARGET=uns-log-line1 → reads fnkit:config:uns-log-line1
 //
 // Config format (stored as JSON string in Valkey):
 //
@@ -37,7 +37,7 @@ import (
 //
 // All metadata is derived from the topic path — no manual config needed.
 
-type pglogConfig struct {
+type uns-logConfig struct {
 	Table  string   `json:"table"`
 	Topics []string `json:"topics"`
 }
@@ -58,7 +58,7 @@ var (
 
 	// Config cache
 	configMu      sync.RWMutex
-	cachedConfig  *pglogConfig
+	cachedConfig  *uns-logConfig
 	configFetched time.Time
 	configTTL     = 30 * time.Second
 
@@ -74,27 +74,27 @@ func init() {
 
 	opts, err := redis.ParseURL(cacheURL)
 	if err != nil {
-		log.Fatalf("[pglog] Failed to parse CACHE_URL: %v", err)
+		log.Fatalf("[uns-log] Failed to parse CACHE_URL: %v", err)
 	}
 	cache = redis.NewClient(opts)
 
 	if err := cache.Ping(ctx).Err(); err != nil {
-		log.Printf("[pglog] Warning: cache not reachable at %s: %v", cacheURL, err)
+		log.Printf("[uns-log] Warning: cache not reachable at %s: %v", cacheURL, err)
 	} else {
-		log.Printf("[pglog] Connected to cache at %s", cacheURL)
+		log.Printf("[uns-log] Connected to cache at %s", cacheURL)
 	}
 
 	// ── Postgres connection ──────────────────────────────────────────
 	dbURL := envOrDefault("DATABASE_URL", "postgres://fnkit:fnkit@fnkit-postgres:5432/fnkit?sslmode=disable")
 	db, err = pgxpool.New(ctx, dbURL)
 	if err != nil {
-		log.Fatalf("[pglog] Failed to create Postgres pool: %v", err)
+		log.Fatalf("[uns-log] Failed to create Postgres pool: %v", err)
 	}
 
 	if err := db.Ping(ctx); err != nil {
-		log.Printf("[pglog] Warning: Postgres not reachable: %v", err)
+		log.Printf("[uns-log] Warning: Postgres not reachable: %v", err)
 	} else {
-		log.Printf("[pglog] Connected to Postgres")
+		log.Printf("[uns-log] Connected to Postgres")
 	}
 
 	// ── Initialize last snapshot ─────────────────────────────────────
@@ -102,13 +102,13 @@ func init() {
 
 	// ── Register HTTP function ───────────────────────────────────────
 	// The function name matches FUNCTION_TARGET, which is also the config key.
-	functionName := envOrDefault("FUNCTION_TARGET", "pglog")
-	functions.HTTP(functionName, pglogHandler)
-	log.Printf("[pglog] Registered HTTP function: %s", functionName)
+	functionName := envOrDefault("FUNCTION_TARGET", "uns-log")
+	functions.HTTP(functionName, uns-logHandler)
+	log.Printf("[uns-log] Registered HTTP function: %s", functionName)
 }
 
 // ── HTTP Handler ─────────────────────────────────────────────────────
-// POST /pglog (or whatever FUNCTION_TARGET is set to)
+// POST /uns-log (or whatever FUNCTION_TARGET is set to)
 //
 // 1. Loads config from Valkey cache (cached 30s)
 // 2. Reads all configured topics from Valkey cache
@@ -116,7 +116,7 @@ func init() {
 // 4. If any topic changed → INSERT snapshot row to Postgres
 // 5. Returns JSON summary
 
-func pglogHandler(w http.ResponseWriter, r *http.Request) {
+func uns-logHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	// 1. Load config from Valkey
@@ -198,7 +198,7 @@ func pglogHandler(w http.ResponseWriter, r *http.Request) {
 
 // ── Config Loading (from Valkey) ─────────────────────────────────────
 
-func loadConfig() (*pglogConfig, error) {
+func loadConfig() (*uns-logConfig, error) {
 	configMu.RLock()
 	if cachedConfig != nil && time.Since(configFetched) < configTTL {
 		cfg := cachedConfig
@@ -216,7 +216,7 @@ func loadConfig() (*pglogConfig, error) {
 	}
 
 	// Config key = fnkit:config:<FUNCTION_TARGET>
-	configKey := "fnkit:config:" + envOrDefault("FUNCTION_TARGET", "pglog")
+	configKey := "fnkit:config:" + envOrDefault("FUNCTION_TARGET", "uns-log")
 
 	raw, err := cache.Get(ctx, configKey).Result()
 	if err == redis.Nil {
@@ -226,7 +226,7 @@ func loadConfig() (*pglogConfig, error) {
 		return nil, fmt.Errorf("failed to read config from cache key %s: %w", configKey, err)
 	}
 
-	var config pglogConfig
+	var config uns-logConfig
 	if err := json.Unmarshal([]byte(raw), &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
@@ -237,7 +237,7 @@ func loadConfig() (*pglogConfig, error) {
 
 	cachedConfig = &config
 	configFetched = time.Now()
-	log.Printf("[pglog] Loaded config from %s (%d topics, table: %s)",
+	log.Printf("[uns-log] Loaded config from %s (%d topics, table: %s)",
 		configKey, len(config.Topics), config.Table)
 
 	return &config, nil
@@ -438,7 +438,7 @@ func insertRow(table string, uns unsFields, tag string, values map[string]interf
 		return fmt.Errorf("failed to insert row: %w", err)
 	}
 
-	log.Printf("[pglog] Logged row to %s: %s/%s/%s/%s tag=%s changed=%v",
+	log.Printf("[uns-log] Logged row to %s: %s/%s/%s/%s tag=%s changed=%v",
 		table, uns.Enterprise, uns.Site, uns.Area, uns.Line, tag, changed)
 
 	return nil

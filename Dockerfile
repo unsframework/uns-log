@@ -8,8 +8,8 @@ FROM gcr.io/distroless/static-debian11
 COPY --from=builder /app/server /server
 
 # Function target name — also used as Valkey config key
-# e.g. pglog → reads fnkit:config:pglog from cache
-ENV FUNCTION_TARGET=pglog
+# e.g. uns-log → reads fnkit:config:uns-log from cache
+ENV FUNCTION_TARGET=uns-log
 
 # PostgreSQL connection (external)
 ENV DATABASE_URL=postgres://fnkit:fnkit@fnkit-postgres:5432/fnkit?sslmode=disable

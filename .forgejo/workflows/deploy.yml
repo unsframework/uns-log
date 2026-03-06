@@ -1,11 +1,11 @@
 # FnKit Deploy — Forgejo Actions
-# Builds and deploys the pglog PostgreSQL change logger on every push to main
+# Builds and deploys the uns-log PostgreSQL change logger on every push to main
 # Reads UNS topics from cache, logs changes to Postgres
 #
 # Pipeline: git push → build image → deploy container → health check
 #
-# Config is stored in Valkey at fnkit:config:pglog (not S3).
-# Set it with: docker exec fnkit-cache valkey-cli SET fnkit:config:pglog '{"table":"uns_log","topics":[...]}'
+# Config is stored in Valkey at fnkit:config:uns-log (not S3).
+# Set it with: docker exec fnkit-cache valkey-cli SET fnkit:config:uns-log '{"table":"uns_log","topics":[...]}'
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
 
       - name: Build image
         run: |
-          FUNCTION_NAME="pglog"
+          FUNCTION_NAME="uns-log"
           IMAGE_NAME="fnkit-fn-${FUNCTION_NAME}:latest"
           IMAGE_PREV="fnkit-fn-${FUNCTION_NAME}:prev"
 
@@ -49,7 +49,7 @@ jobs:
             --label fnkit.fn=true \
             --label fnkit.deployed="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --restart unless-stopped \
-            -e FUNCTION_TARGET=pglog \
+            -e FUNCTION_TARGET=uns-log \
             -e DATABASE_URL=postgres://postgres:ON9bolwhpJibSOiFcCkLWudInJNfGah1uM66e9LshLLpHX3QgGflwJmGKiRiPRAI@162.55.27.173:5434/postgres \
             -e CACHE_URL=redis://fnkit-cache:6379 \
             -e CACHE_KEY_PREFIX=uns \
@@ -78,7 +78,7 @@ jobs:
                 --label fnkit.deployed="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                 --label fnkit.rollback=true \
                 --restart unless-stopped \
-                -e FUNCTION_TARGET=pglog \
+                -e FUNCTION_TARGET=uns-log \
                 -e DATABASE_URL=postgres://postgres:ON9bolwhpJibSOiFcCkLWudInJNfGah1uM66e9LshLLpHX3QgGflwJmGKiRiPRAI@162.55.27.173:5434/postgres \
                 -e CACHE_URL=redis://fnkit-cache:6379 \
                 -e CACHE_KEY_PREFIX=uns \

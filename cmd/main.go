@@ -5,7 +5,7 @@ import (
 	"os"
 
 	// Blank-import the function package so the init() runs
-	_ "pglog"
+	_ "uns-log"
 	"github.com/GoogleCloudPlatform/functions-framework-go/funcframework"
 )
 

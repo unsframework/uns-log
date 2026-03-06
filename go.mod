@@ -1,4 +1,4 @@
-module pglog
+module uns-log
 
 go 1.21
 
