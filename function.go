@@ -45,7 +45,7 @@ import (
 // Wildcards are resolved at runtime against the uns:topics registry
 // (populated by uns-framework). Concrete topics pass through unchanged.
 
-type uns-logConfig struct {
+type unsLogConfig struct {
 	Table  string   `json:"table"`
 	Topics []string `json:"topics"`
 }
@@ -66,7 +66,7 @@ var (
 
 	// Config cache
 	configMu      sync.RWMutex
-	cachedConfig  *uns-logConfig
+	cachedConfig  *unsLogConfig
 	configFetched time.Time
 	configTTL     = 30 * time.Second
 
@@ -111,7 +111,7 @@ func init() {
 	// ── Register HTTP function ───────────────────────────────────────
 	// The function name matches FUNCTION_TARGET, which is also the config key.
 	functionName := envOrDefault("FUNCTION_TARGET", "uns-log")
-	functions.HTTP(functionName, uns-logHandler)
+	functions.HTTP(functionName, unsLogHandler)
 	log.Printf("[uns-log] Registered HTTP function: %s", functionName)
 }
 
@@ -124,7 +124,7 @@ func init() {
 // 4. If any topic changed → INSERT snapshot row to Postgres
 // 5. Returns JSON summary
 
-func uns-logHandler(w http.ResponseWriter, r *http.Request) {
+func unsLogHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	// 1. Load config from Valkey
@@ -224,7 +224,7 @@ func uns-logHandler(w http.ResponseWriter, r *http.Request) {
 
 // ── Config Loading (from Valkey) ─────────────────────────────────────
 
-func loadConfig() (*uns-logConfig, error) {
+func loadConfig() (*unsLogConfig, error) {
 	configMu.RLock()
 	if cachedConfig != nil && time.Since(configFetched) < configTTL {
 		cfg := cachedConfig
@@ -252,7 +252,7 @@ func loadConfig() (*uns-logConfig, error) {
 		return nil, fmt.Errorf("failed to read config from cache key %s: %w", configKey, err)
 	}
 
-	var config uns-logConfig
+	var config unsLogConfig
 	if err := json.Unmarshal([]byte(raw), &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
