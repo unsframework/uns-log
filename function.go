@@ -36,6 +36,14 @@ import (
 //   v1.0/{enterprise}/{site}/{area}/{line}/{tag...}
 //
 // All metadata is derived from the topic path — no manual config needed.
+//
+// ── Wildcard Topics ─────────────────────────────────────────────────
+// Topics in config may contain MQTT-style wildcards:
+//   + matches exactly one level    e.g. v1.0/acme/factory1/+/line1/temperature
+//   # matches zero or more levels  e.g. v1.0/acme/factory1/mixing/#
+//
+// Wildcards are resolved at runtime against the uns:topics registry
+// (populated by uns-framework). Concrete topics pass through unchanged.
 
 type uns-logConfig struct {
 	Table  string   `json:"table"`
@@ -135,7 +143,25 @@ func uns-logHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Ensure table exists
+	// 2. Resolve wildcard topics against the uns:topics registry
+	topics, err := resolveTopics(config.Topics)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("Failed to resolve topics: %v", err),
+		})
+		return
+	}
+
+	if len(topics) == 0 {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"logged":  false,
+			"message": "No topics matched (wildcards resolved to empty set)",
+			"patterns": config.Topics,
+		})
+		return
+	}
+
+	// 3. Ensure table exists
 	if err := ensureTable(config.Table); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("Failed to ensure table: %v", err),
@@ -143,8 +169,8 @@ func uns-logHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Read all topics from cache
-	snapshot, err := readTopicsFromCache(config.Topics)
+	// 4. Read all topics from cache
+	snapshot, err := readTopicsFromCache(topics)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("Failed to read cache: %v", err),
@@ -152,25 +178,25 @@ func uns-logHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Detect changes
-	changed := detectChanges(config.Topics, snapshot)
+	// 5. Detect changes
+	changed := detectChanges(topics, snapshot)
 
 	if len(changed) == 0 {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"logged":  false,
 			"message": "No changes detected",
-			"topics":  len(config.Topics),
+			"topics":  len(topics),
 		})
 		return
 	}
 
-	// 5. Build values JSONB (tag → value for all topics)
-	values := buildValuesJSON(config.Topics, snapshot)
+	// 6. Build values JSONB (tag → value for all topics)
+	values := buildValuesJSON(topics, snapshot)
 
-	// 6. Parse UNS fields from first topic (all share the same prefix)
-	uns := parseTopic(config.Topics[0])
+	// 7. Parse UNS fields from first topic (all share the same prefix)
+	uns := parseTopic(topics[0])
 
-	// 7. INSERT row
+	// 8. INSERT row
 	changedTag := changed[0] // the first changed tag for the trigger column
 	if err := insertRow(config.Table, uns, changedTag, values, changed); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -179,8 +205,8 @@ func uns-logHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 8. Update last snapshot
-	updateLastSnapshot(config.Topics, snapshot)
+	// 9. Update last snapshot
+	updateLastSnapshot(topics, snapshot)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"logged":  true,
@@ -442,6 +468,103 @@ func insertRow(table string, uns unsFields, tag string, values map[string]interf
 		table, uns.Enterprise, uns.Site, uns.Area, uns.Line, tag, changed)
 
 	return nil
+}
+
+// ── Wildcard Topic Resolution ────────────────────────────────────────
+// Resolves MQTT-style wildcard patterns against the uns:topics registry.
+// Concrete topics (no wildcards) pass through unchanged.
+// Patterns containing + or # are matched against all known topics.
+
+// resolveTopics takes the configured topic list (which may contain wildcards)
+// and returns a deduplicated list of concrete topics.
+func resolveTopics(configTopics []string) ([]string, error) {
+	var concrete []string
+	var patterns []string
+
+	for _, t := range configTopics {
+		if strings.Contains(t, "+") || strings.Contains(t, "#") {
+			patterns = append(patterns, t)
+		} else {
+			concrete = append(concrete, t)
+		}
+	}
+
+	// No wildcards — return as-is (fast path, no cache lookup needed)
+	if len(patterns) == 0 {
+		return concrete, nil
+	}
+
+	// Fetch all known topics from the uns:topics registry
+	topicsKey := fmt.Sprintf("%s:topics", keyPrefix)
+	allTopics, err := cache.SMembers(ctx, topicsKey).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read topic registry (%s): %w", topicsKey, err)
+	}
+
+	// Match each registered topic against wildcard patterns
+	seen := make(map[string]bool)
+	for _, t := range concrete {
+		seen[t] = true
+	}
+
+	for _, topic := range allTopics {
+		if seen[topic] {
+			continue
+		}
+		for _, pattern := range patterns {
+			if matchMQTTPattern(pattern, topic) {
+				concrete = append(concrete, topic)
+				seen[topic] = true
+				break
+			}
+		}
+	}
+
+	log.Printf("[uns-log] Resolved %d patterns + %d concrete → %d topics",
+		len(patterns), len(configTopics)-len(patterns), len(concrete))
+
+	return concrete, nil
+}
+
+// matchMQTTPattern checks if a topic matches an MQTT wildcard pattern.
+//
+// Rules (per MQTT spec):
+//   - "+" matches exactly one topic level
+//   - "#" matches zero or more levels and must be the last segment
+//
+// Examples:
+//
+//	matchMQTTPattern("v1.0/acme/+/mixing/line1/temperature", "v1.0/acme/factory1/mixing/line1/temperature") → true
+//	matchMQTTPattern("v1.0/acme/factory1/#", "v1.0/acme/factory1/mixing/line1/temperature")                 → true
+//	matchMQTTPattern("v1.0/acme/factory1/#", "v1.0/acme/factory1")                                          → true
+func matchMQTTPattern(pattern, topic string) bool {
+	patternParts := strings.Split(pattern, "/")
+	topicParts := strings.Split(topic, "/")
+
+	for i, pp := range patternParts {
+		// "#" matches everything from here onward (must be last segment)
+		if pp == "#" {
+			return true
+		}
+
+		// Ran out of topic levels but pattern still has more
+		if i >= len(topicParts) {
+			return false
+		}
+
+		// "+" matches exactly one level (any value)
+		if pp == "+" {
+			continue
+		}
+
+		// Literal match required
+		if pp != topicParts[i] {
+			return false
+		}
+	}
+
+	// Pattern consumed — topic must also be fully consumed
+	return len(patternParts) == len(topicParts)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

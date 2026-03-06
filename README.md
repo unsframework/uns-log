@@ -55,6 +55,8 @@ FUNCTION_TARGET=uns-log-line2  →  reads fnkit:config:uns-log-line2
 }
 ```
 
+Topics can be **explicit paths** or **MQTT-style wildcard patterns** (see [Wildcard Topics](#wildcard-topics) below).
+
 That's it — **everything else is derived from the UNS topic path**:
 
 | UNS Level    | Parsed From | Example     |
@@ -70,6 +72,40 @@ Set config with valkey-cli:
 ```bash
 docker exec fnkit-cache valkey-cli SET fnkit:config:uns-log '{"table":"uns_log","topics":["v1.0/acme/factory1/mixing/line1/temperature","v1.0/acme/factory1/mixing/line1/pressure","v1.0/acme/factory1/mixing/line1/speed"]}'
 ```
+
+## Wildcard Topics
+
+Topics in config support standard MQTT wildcard patterns, resolved at runtime against the `uns:topics` registry (populated by [uns-framework](../uns-framework/)).
+
+| Wildcard | Meaning | Example |
+| -------- | ------- | ------- |
+| `+` | Matches **exactly one** topic level | `v1.0/acme/factory1/+/line1/status` |
+| `#` | Matches **zero or more** levels (must be last) | `v1.0/acme/factory1/mixing/#` |
+
+### Examples
+
+```bash
+# Log status for ALL lines in area1 (+ = single-level wildcard)
+docker exec fnkit-cache valkey-cli SET fnkit:config:uns-log \
+  '{"table":"uns_log","topics":["v1.0/acme/factory1/area1/+/status"]}'
+
+# Log everything under cnc-01 (# = multi-level wildcard)
+docker exec fnkit-cache valkey-cli SET fnkit:config:uns-log-cnc01 \
+  '{"table":"uns_log","topics":["v1.0/acme/factory1/area1/cnc-01/#"]}'
+
+# Mix concrete topics and wildcards
+docker exec fnkit-cache valkey-cli SET fnkit:config:uns-log-mixed \
+  '{"table":"uns_log","topics":["v1.0/acme/factory1/area1/cnc-01/#","v1.0/acme/factory1/area1/line5/temperature"]}'
+```
+
+### How it works
+
+1. Concrete topics (no `+` or `#`) pass through unchanged — no extra lookup needed
+2. Wildcard patterns trigger a read of the `uns:topics` SET from cache (the full topic registry)
+3. Each registered topic is matched against the wildcard patterns
+4. The resolved concrete topic list is used for cache reading, change detection, and logging
+
+Wildcards are resolved on **every invocation**, so new topics that appear in the registry (e.g. a new sensor comes online) are automatically picked up without restarting or reconfiguring.
 
 ## PostgreSQL Table
 
