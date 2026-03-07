@@ -2,6 +2,23 @@
 
 A Go HTTP function that reads [UNS Framework](https://www.unsframework.com) topic data from the shared Valkey cache (populated by [uns-framework](../uns-framework/)) and logs snapshot rows to PostgreSQL when any value changes.
 
+> **Note:** uns-log is HTTP-triggered — it only captures values when an HTTP request hits it (typically on a timer or cron). Values that change between requests may be missed. If you need a complete time-series record of **every** change, see [uns-historian](https://github.com/unsframework/uns-historian) which subscribes directly to MQTT and logs every value change in real-time.
+
+## uns-log vs uns-historian
+
+| Aspect | uns-log | [uns-historian](https://github.com/unsframework/uns-historian) |
+| ------ | ------- | ------------- |
+| Trigger | HTTP (polled on timer) | MQTT (real-time) |
+| Framework | GoogleCloudPlatform/functions-framework-go | functionkit/function-framework-go |
+| Data capture | Snapshot at poll time | Every individual change |
+| Missed values | Possible — between HTTP polls | None — every MQTT message captured |
+| Change detection | Cache-based (current vs previous) | In-memory (per-topic last value) |
+| Row content | Full snapshot (all tags as JSONB) | Single value per row |
+| Wildcard handling | Application-level pattern matching | Native MQTT broker subscription |
+
+**Use uns-log** when you want periodic snapshots of grouped tags (e.g. all sensors on a line in one row).
+**Use [uns-historian](https://github.com/unsframework/uns-historian)** when you need a complete time-series record of every change with no gaps.
+
 ## How It Works
 
 ```
